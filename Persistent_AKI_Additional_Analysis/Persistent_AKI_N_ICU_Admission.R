@@ -1,0 +1,241 @@
+library(tidyverse)
+library(caret)
+library(xgboost)
+library(caretEnsemble)
+library(pROC)
+library(caTools)
+library(randomForest)
+library(nnet)
+library(DALEX)
+library(iml)
+
+# setting
+#analysis = c("_sensitivity")
+analysis=""
+
+# load the imputed data
+impDat = readRDS("G:/Persistent_AKI/Xinlei/Data/Data_Imputed.rds")
+rawData = readRDS('G:/Persistent_AKI/Xinlei/Data/Data_Revised.rds')
+
+# create list to save the results
+AKI_ICU24_list = vector()
+AKI_ICU48_list = vector()
+AKI_BEFORE_ICU_list = vector()
+stage23_ICU24_list = vector()
+stage23_ICU48_list = vector()
+stage23_BEFORE_ICU_list = vector()
+n_list = vector()
+n_AKI_list = vector()
+n_stage23_list = vector()
+
+
+# variables that needs to be imputed
+imp_var = c('age_at_admission',
+            'gender',
+            'race',
+            'charlson',
+            'apache3',
+            'TOTAL_INPUTS_BEFORE_AKI',
+            'TOTAL_SALINE_BEFORE_AKI',
+            'TOTAL_OUTPUTS_BEFORE_AKI',
+            'TOTAL_Urine_Output_BEFORE_AKI',
+            'CUMULATIVE_BALANCE_BEFORE_AKI',
+            'MAX_LACTATE',
+            'MAX_CHLORIDE',
+            "MAX_SODIUM",
+            'MIN_ALBUMIN',
+            'MIN_PLATELETS',
+            'refCreat',
+            'weight',
+            'height',
+            'BMI',
+            'sofa_24',
+            'MAX_DBP',
+            'MAX_HR',
+            'MIN_SpO2',
+            'AVG_RR',
+            'MAX_TEMP',
+            'MIN_HGB',
+            'MAX_TOTAL_BILI',
+            'MAX_INR',
+            'MAX_WBC',
+            'MIN_PH',
+            'BASELINE_eGFR',
+            'MIN_PULSE_PRESS_BEFORE_AKI',
+            'MAX_PULSE_PRESS_BEFORE_AKI',
+            'MIN_MAP_BEFORE_AKI')
+
+risk_var = c("age_at_admission",
+             "gender",
+             "race",
+             "charlson",
+             # comorbidity start
+             "mi",
+             "chf",
+             "pvd",
+             "cevd",
+             "dementia",
+             "cpd",
+             "rheumd",
+             "pud",
+             "mld",
+             "diab", 
+             "diabwc",
+             "diabetes",
+             "hp",
+             "rend",
+             "canc",
+             "msld",
+             "metacanc",
+             'aids',
+             # comorbidity end
+             "NSAIDS_BEFORE_AKI",
+             "ACE_BEFORE_AKI",
+             "ARB_BEFORE_AKI",
+             "DIURETICS_BEFORE_AKI",
+             "CALCINEURIN_BEFORE_AKI",
+             "ANTIBIOTICS_BEFORE_AKI",
+             "VANCOMYCIN_BEFORE_AKI",
+             "OTHER_BEFORE_AKI",
+             "apache3",
+             "TOTAL_INPUTS_BEFORE_AKI",
+             "TOTAL_SALINE_BEFORE_AKI",
+             "TOTAL_OUTPUTS_BEFORE_AKI",
+             "TOTAL_Urine_Output_BEFORE_AKI",
+             "TOTAL_BLOOD_PROD_BEFORE_AKI",
+             "TOTAL_ALBUMIN_BEFORE_AKI",
+             "CUMULATIVE_BALANCE_BEFORE_AKI",
+             "TOTAL_DOSE_BEFORE_AKI_norepinephrine",
+             "TOTAL_DOSE_BEFORE_AKI_phenylephrine",
+             "TOTAL_DOSE_BEFORE_AKI_vasopressin",
+             "TOTAL_DOSE_BEFORE_AKI_dopamine",
+             "TOTAL_DOSE_BEFORE_AKI_epinephrine",
+             "TOTAL_DOSE_BEFORE_AKI_dobutamine",
+             "TOTAL_DOSE_BEFORE_AKI_milrinone",
+             "MAX_LACTATE",
+             "MAX_CHLORIDE",
+             "MAX_SODIUM",
+             "MIN_ALBUMIN",
+             "MIN_PLATELETS",
+             "MV_DAYS",
+             "SEPSIS",
+             "SEPTIC_SHOCK",
+             "CARDIAC_SURG",
+             'HEART_TRANSP',
+             "LUNG_TRANSP",
+             "LIVER_TRANSP",
+             "refCreat",
+             "FIRST_AKI_STAGE",
+             "TIME_TO_FIRST_AKI",
+             "BMI",
+             "sofa_24",
+             "ALL_CKD_ESRD",
+             "MAX_DBP",
+             "MAX_HR",
+             "MIN_SpO2",
+             "AVG_RR",
+             "MAX_TEMP",
+             "MIN_HGB",
+             "MAX_TOTAL_BILI",
+             "MAX_INR",
+             "MAX_WBC",
+             "MIN_PH",
+             'MAX_PEEP',
+             "MIN_CARDIAC_INDEX",
+             "MAX_CVP",
+             "MIN_CVP",
+             "MEAN_DIASTOLIC_PRESS",
+             "MIN_SCVO2",
+             "MIN_SVO2",
+             "BASELINE_eGFR",
+             "MIN_PULSE_PRESS_BEFORE_AKI",
+             "MIN_MAP_BEFORE_AKI",
+             "AKI_Category_final",
+             "dead_90")
+
+
+for (i in 1:length(impDat)){
+  
+  # get each imputed dataset
+  imp = impDat[[i]]
+  # replace the imputed variables
+  # imp = imp[order(c(imp$patientid, imp$encounter_start_date_time_sh)),]
+  imp = imp %>%
+    arrange(patientid, patientvisitid)
+  data = rawData
+  data = data %>%
+    arrange(patientid, patientvisitid)
+  data = data %>%
+    select(-all_of(imp_var))
+  imp_sub = imp %>%
+    select(patientid, patientvisitid, all_of(imp_var))
+  data = merge(data, imp_sub, by = c("patientid", "patientvisitid"))
+  
+  data = data %>%
+    filter(ESRD==0 & ecmo==0 & BASELINE_eGFR>=15 & refCreat<4 & CKD_stage_4==0 & CKD_stage_5==0)
+  data = data[order(data$encounter_start_date_time_sh),] #order dataframe by encounter id
+  # subset to rows that are not duplicates of a previous encounter for that patient
+  data = data[!duplicated(data$patientid),]
+  
+  # calculate the difference in hours between ICU admission and first AKI date
+  data$ICU_to_AKI_time = difftime(as.POSIXct(data$FIRST_AKI_DATETIME, format="%Y-%m-%dT%H:%M:%SZ", tz="UTC"), 
+                                  as.POSIXct(data$dt_icu_start_sh, format="%Y-%m-%dT%H:%M:%SZ", tz="UTC"), 
+                                  units = "hours")
+  
+  
+  
+  AKI_ICU24_list[i] = data %>% 
+    filter(ICU_to_AKI_time<=24 & ICU_to_AKI_time>0) %>% 
+    nrow()
+  
+  AKI_ICU48_list[i] = data %>% 
+    filter(ICU_to_AKI_time<=48 & ICU_to_AKI_time>0) %>% 
+    nrow()
+  
+  AKI_BEFORE_ICU_list[i] = data %>% 
+    filter(ICU_to_AKI_time<=0) %>% 
+    nrow()
+  
+  stage23_ICU24_list[i] = data %>%
+    filter(FIRST_AKI_STAGE==2 | FIRST_AKI_STAGE==3) %>%
+    filter(ICU_to_AKI_time<=24 & ICU_to_AKI_time>0) %>%
+    nrow()
+  
+  stage23_ICU48_list[i] = data %>%
+    filter(FIRST_AKI_STAGE==2 | FIRST_AKI_STAGE==3) %>%
+    filter(ICU_to_AKI_time<=48 & ICU_to_AKI_time>0) %>%
+    nrow()
+    
+  stage23_BEFORE_ICU_list[i] = data %>% 
+    filter(FIRST_AKI_STAGE==2 | FIRST_AKI_STAGE==3) %>%
+    filter(ICU_to_AKI_time<=0) %>% 
+    nrow()
+    
+  n_list[i] = data %>%
+    nrow()
+  
+  n_AKI_list[i] = data %>%
+    filter(AKI_Category_subgroup != "no_AKI") %>%
+    nrow()
+  
+  n_stage23_list[i] = data %>%
+    filter(aki_2_3_icu!=0) %>%
+    nrow()
+
+}
+
+mean(AKI_ICU24_list)
+mean(AKI_ICU48_list)
+mean(AKI_BEFORE_ICU_list)
+
+mean(AKI_ICU24_list)/mean(n_list)
+mean(AKI_ICU48_list)/mean(n_list)
+mean(AKI_BEFORE_ICU_list)/mean(n_list)
+
+mean(AKI_ICU24_list)/mean(n_AKI_list)
+mean(AKI_ICU48_list)/mean(n_AKI_list)
+mean(AKI_BEFORE_ICU_list)/mean(n_AKI_list)
+
+mean(stage23_ICU24_list)/mean(n_stage23_list)
+mean(stage23_ICU48_list)/mean(n_stage23_list)
+mean(stage23_BEFORE_ICU_list)/mean(n_stage23_list)
